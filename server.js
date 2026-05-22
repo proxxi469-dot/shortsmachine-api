@@ -74,7 +74,7 @@ app.post('/api/tts', rateLimit(20), async (req, res) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'tts-1',
+        model: 'tts-1-hd',
         voice,
         input: text.substring(0, 4000),
         response_format: 'mp3',
@@ -105,20 +105,20 @@ app.get('/api/pexels', rateLimit(40), async (req, res) => {
     return res.status(500).json({ error: 'Server Pexels not configured' });
   }
   try {
-    const url = `https://api.pexels.com/videos/search?query=${encodeURIComponent(q)}&per_page=${perPage}&orientation=portrait`;
+    // Don't force portrait (too restrictive); request more and let client pick best
+    const url = `https://api.pexels.com/videos/search?query=${encodeURIComponent(q)}&per_page=${perPage}`;
     const r = await fetch(url, { headers: { 'Authorization': process.env.PEXELS_API_KEY } });
     if (!r.ok) {
       return res.status(502).json({ error: 'Pexels provider error', status: r.status });
     }
     const data = await r.json();
-    // Return only what the client needs (trim payload)
+    // Return all video files (client picks best fit); don't over-filter
     const videos = (data.videos || []).map(v => ({
       id: v.id,
       duration: v.duration,
       files: (v.video_files || [])
-        .filter(f => f.quality === 'sd' || f.quality === 'hd')
         .map(f => ({ link: f.link, width: f.width, height: f.height, quality: f.quality })),
-    }));
+    })).filter(v => v.files.length > 0);
     res.json({ videos });
   } catch (e) {
     console.error('[Pexels] error:', e.message);
