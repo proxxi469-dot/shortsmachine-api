@@ -352,13 +352,20 @@ app.post('/api/image', rateLimit(40), async (req, res) => {
   if ((global.__imgDay.ips[_ip] || 0) >= 150) return res.status(429).json({ error: 'Daily image limit for this user' });
   const prompt = cleanText((req.body && req.body.prompt || '').toString(), 500);
   if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
-  const style = cleanText((req.body && req.body.style || '').toString(), 120);
+  const style = cleanText((req.body && req.body.style || '').toString(), 160);
   const full = (style ? style + ', ' : '') + prompt;
+  // Model selection: 'dev' = higher quality (more 3D, detailed), 'schnell' = fast/cheap
+  const modelIn = (req.body && req.body.model || 'schnell').toString();
+  const MODELS = { schnell: 'fal-ai/flux/schnell', dev: 'fal-ai/flux/dev' };
+  const model = MODELS[modelIn] || MODELS.schnell;
+  const steps = (modelIn === 'dev') ? 28 : 4;
+  const reqBody = { prompt: full, image_size: 'portrait_16_9', num_images: 1, num_inference_steps: steps };
+  if (modelIn === 'dev') reqBody.guidance_scale = 3.5;
   try {
-    const r = await fetch('https://fal.run/fal-ai/flux/schnell', {
+    const r = await fetch('https://fal.run/' + model, {
       method: 'POST',
       headers: { 'Authorization': 'Key ' + process.env.FAL_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: full, image_size: 'portrait_16_9', num_images: 1, num_inference_steps: 4 }),
+      body: JSON.stringify(reqBody),
     });
     const d = await r.json();
     const url = d && d.images && d.images[0] && d.images[0].url;
