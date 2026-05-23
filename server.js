@@ -347,8 +347,8 @@ app.get('/api/aivideo', rateLimit(180), async (req, res) => {
 // ============================================================
 // Fill in your real Gumroad PRODUCT IDs (Product -> Settings -> Advanced).
 const COIN_PRODUCTS = {
-  // 'PASTE_PRODUCT_ID_FOR_60_COINS': 60,
-  // 'PASTE_PRODUCT_ID_FOR_170_COINS': 170,
+  'qiwsh': 60,    // $5 pack
+  'ouftrq': 170,  // $10 pack
 };
 app.post('/api/redeem', rateLimit(15), async (req, res) => {
   const code = cleanText((req.body && req.body.code || '').toString(), 80).trim();
@@ -357,7 +357,7 @@ app.post('/api/redeem', rateLimit(15), async (req, res) => {
   if (!ids.length) return res.status(503).json({ ok: false, reason: 'not_configured' });
   for (const pid of ids) {
     try {
-      const params = new URLSearchParams({ product_id: pid, license_key: code, increment_uses_count: 'true' });
+      const params = new URLSearchParams({ product_permalink: pid, license_key: code, increment_uses_count: 'true' });
       const r = await fetch('https://api.gumroad.com/v2/licenses/verify', {
         method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString(),
       });
