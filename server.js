@@ -27,13 +27,18 @@ app.use(express.json({ limit: '1mb' }));
 
 // --- CORS: only allow your site to call this server ---
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ||
-  'https://shortmachne.netlify.app,http://localhost:3000,http://localhost:8888')
+  'https://shortsmachine.net,https://www.shortsmachine.net,https://shortsmachine1.pages.dev,https://shortmachne.netlify.app,http://localhost:3000,http://localhost:8888')
   .split(',').map(s => s.trim());
 
 app.use(cors({
   origin: (origin, cb) => {
-    // allow requests with no origin (mobile apps, curl) and allowed origins
-    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    // allow requests with no origin (mobile apps, curl)
+    if (!origin) return cb(null, true);
+    // allow exact matches in the list
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    // also allow any *.pages.dev preview (Cloudflare Pages) and the main domain
+    if (/^https:\/\/([a-z0-9-]+\.)?shortsmachine\.net$/.test(origin)) return cb(null, true);
+    if (/^https:\/\/[a-z0-9-]+\.pages\.dev$/.test(origin)) return cb(null, true);
     return cb(new Error('Not allowed by CORS: ' + origin));
   }
 }));
