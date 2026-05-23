@@ -340,6 +340,35 @@ app.get('/api/aivideo', rateLimit(180), async (req, res) => {
 });
 
 // ============================================================
+// 4c) AI Image (Flux schnell via fal.ai) — POST /api/image { prompt, style }
+//     Cheap cartoon/illustration frames for animated shorts.
+// ============================================================
+app.post('/api/image', rateLimit(40), async (req, res) => {
+  if (!process.env.FAL_KEY) return res.status(500).json({ error: 'Server FAL not configured' });
+  const _ip = (req.headers['x-forwarded-for'] || req.ip || '').toString().split(',')[0].trim();
+  const _today = new Date().toDateString();
+  if (!global.__imgDay || global.__imgDay.date !== _today) global.__imgDay = { date: _today, ips: {}, total: 0 };
+  if (global.__imgDay.total >= 1500) return res.status(429).json({ error: 'Daily image limit reached' });
+  if ((global.__imgDay.ips[_ip] || 0) >= 150) return res.status(429).json({ error: 'Daily image limit for this user' });
+  const prompt = cleanText((req.body && req.body.prompt || '').toString(), 500);
+  if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
+  const style = cleanText((req.body && req.body.style || '').toString(), 120);
+  const full = (style ? style + ', ' : '') + prompt;
+  try {
+    const r = await fetch('https://fal.run/fal-ai/flux/schnell', {
+      method: 'POST',
+      headers: { 'Authorization': 'Key ' + process.env.FAL_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: full, image_size: 'portrait_16_9', num_images: 1, num_inference_steps: 4 }),
+    });
+    const d = await r.json();
+    const url = d && d.images && d.images[0] && d.images[0].url;
+    if (!url) { console.error('[Image]', r.status, JSON.stringify(d).substring(0, 200)); return res.status(502).json({ error: 'image failed' }); }
+    global.__imgDay.ips[_ip] = (global.__imgDay.ips[_ip] || 0) + 1; global.__imgDay.total++;
+    res.json({ url });
+  } catch (e) { console.error('[Image]', e.message); res.status(500).json({ error: 'image failed' }); }
+});
+
+// ============================================================
 // 5) Coin redeem (Gumroad license key) — POST /api/redeem { code }
 //    Verifies the buyer's Gumroad license key and returns the coin amount.
 //    Gumroad tracks uses count -> prevents the same code being redeemed twice.
