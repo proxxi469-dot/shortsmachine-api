@@ -350,9 +350,38 @@ const COIN_PRODUCTS = {
   'qiwsh': 60,    // $5 pack
   'ouftrq': 170,  // $10 pack
 };
+// --- GIFT CODES: owner-generated codes to send coins to friends (no Gumroad needed) ---
+// Manage your own via Railway env var GIFT_CODES = "CODE:coins,CODE:coins".
+// If the env var is not set, the starter batch below is used. Single-use (in-memory).
+const GIFT_STARTER = {
+  'SM-7K2P9Q': 100, 'SM-M4X8RT': 100, 'SM-Q9D3LV': 100, 'SM-Z6B1HN': 100, 'SM-P3W7KC': 100,
+  'SM-V8N2GS': 100, 'SM-L5T9XJ': 100, 'SM-D2K6QW': 100, 'SM-R7M4PB': 100, 'SM-H9C3VZ': 100,
+  'SM-T4G8LN': 200, 'SM-X2P6KD': 200, 'SM-B5V9QM': 200, 'SM-N8L3WR': 200, 'SM-K6D2HT': 200,
+};
+function getGiftCodes() {
+  const out = {};
+  (process.env.GIFT_CODES || '').split(',').forEach(pair => {
+    const parts = pair.split(':');
+    const c = (parts[0] || '').trim().toUpperCase();
+    const n = parseInt(parts[1]);
+    if (c && !isNaN(n)) out[c] = n;
+  });
+  return Object.keys(out).length ? out : GIFT_STARTER;
+}
+if (!global.__usedGift) global.__usedGift = new Set();
 app.post('/api/redeem', rateLimit(15), async (req, res) => {
   const code = cleanText((req.body && req.body.code || '').toString(), 80).trim();
   if (!code) return res.status(400).json({ error: 'Missing code' });
+  // 1) GIFT codes first (owner-generated, for sending coins to friends)
+  const giftUpper = code.toUpperCase();
+  const gifts = getGiftCodes();
+  if (gifts[giftUpper] != null) {
+    if (global.__usedGift.has(giftUpper)) return res.json({ ok: false, reason: 'already_used' });
+    global.__usedGift.add(giftUpper);
+    console.log('[Redeem] Gift code used:', giftUpper, '->', gifts[giftUpper]);
+    return res.json({ ok: true, coins: gifts[giftUpper] });
+  }
+  // 2) Gumroad license keys (paid packs)
   const ids = Object.keys(COIN_PRODUCTS);
   if (!ids.length) return res.status(503).json({ ok: false, reason: 'not_configured' });
   for (const pid of ids) {
