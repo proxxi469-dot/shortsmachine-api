@@ -374,6 +374,30 @@ app.post('/api/redeem', rateLimit(15), async (req, res) => {
 });
 
 // ============================================================
+// 6) Unsplash images — GET /api/images?q=...  (Ken Burns fallback for missing footage)
+// ============================================================
+app.get('/api/images', rateLimit(40), async (req, res) => {
+  if (!process.env.UNSPLASH_KEY) return res.status(500).json({ error: 'Server Unsplash not configured' });
+  let q = cleanText((req.query.q || '').toString(), 80).replace(/[^\w\s\-]/g, ' ').trim();
+  if (!q) return res.status(400).json({ error: 'Missing q' });
+  const perPage = Math.min(Math.max(parseInt(req.query.per_page) || 4, 1), 10);
+  try {
+    const url = `https://api.unsplash.com/search/photos?query=${encodeURIComponent(q)}&per_page=${perPage}&orientation=portrait&content_filter=high`;
+    const r = await fetch(url, { headers: { 'Authorization': 'Client-ID ' + process.env.UNSPLASH_KEY } });
+    if (!r.ok) return res.status(502).json({ error: 'Unsplash error', status: r.status });
+    const d = await r.json();
+    const images = (d.results || []).map(p => ({
+      url: (p.urls && (p.urls.regular || p.urls.full)) || null,
+      width: p.width, height: p.height,
+    })).filter(x => x.url);
+    res.json({ images });
+  } catch (e) {
+    console.error('[Unsplash] error:', e.message);
+    res.status(500).json({ error: 'Unsplash failed' });
+  }
+});
+
+// ============================================================
 // Health check
 // ============================================================
 app.get('/api/health', (req, res) => {
