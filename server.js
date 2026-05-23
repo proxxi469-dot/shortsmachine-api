@@ -277,6 +277,60 @@ app.post('/api/groq', rateLimit(30), async (req, res) => {
 });
 
 // ============================================================
+// 4) AI Video (Seedance 2.0 Fast via fal.ai) — async queue
+//    POST /api/aivideo  { prompt, duration, aspect_ratio } -> { id, status_url, response_url }
+//    GET  /api/aivideo?s=<status_url>&r=<response_url>      -> { status, url? }
+// ============================================================
+const FAL_MODEL = 'bytedance/seedance-2.0/fast/text-to-video';
+const isFalUrl = (u) => typeof u === 'string' && /^https:\/\/queue\.fal\.run\//.test(u);
+
+app.post('/api/aivideo', rateLimit(20), async (req, res) => {
+  if (!process.env.FAL_KEY) return res.status(500).json({ error: 'Server FAL not configured' });
+  const prompt = cleanText((req.body && req.body.prompt || '').toString(), 600);
+  if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
+  const duration = String(Math.min(Math.max(parseInt(req.body && req.body.duration) || 5, 4), 10));
+  const arIn = (req.body && req.body.aspect_ratio) || '9:16';
+  const aspect_ratio = ['9:16', '16:9', '1:1', '3:4', '4:3', '21:9'].includes(arIn) ? arIn : '9:16';
+  try {
+    const r = await fetch('https://queue.fal.run/' + FAL_MODEL, {
+      method: 'POST',
+      headers: { 'Authorization': 'Key ' + process.env.FAL_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, duration, resolution: '720p', aspect_ratio, generate_audio: false }),
+    });
+    const data = await r.json();
+    if (!r.ok || !data.request_id) {
+      console.error('[AIVideo] submit:', r.status, JSON.stringify(data).substring(0, 300));
+      return res.status(502).json({ error: 'AI video submit failed' });
+    }
+    res.json({ id: data.request_id, status_url: data.status_url, response_url: data.response_url });
+  } catch (e) {
+    console.error('[AIVideo] error:', e.message);
+    res.status(500).json({ error: 'AI video failed' });
+  }
+});
+
+app.get('/api/aivideo', rateLimit(180), async (req, res) => {
+  if (!process.env.FAL_KEY) return res.status(500).json({ error: 'Server FAL not configured' });
+  const s = (req.query.s || '').toString();
+  const rurl = (req.query.r || '').toString();
+  if (!isFalUrl(s)) return res.status(400).json({ error: 'Bad status url' });
+  try {
+    const sr = await fetch(s, { headers: { 'Authorization': 'Key ' + process.env.FAL_KEY } });
+    const sd = await sr.json();
+    if (sd.status === 'COMPLETED' && isFalUrl(rurl)) {
+      const rr = await fetch(rurl, { headers: { 'Authorization': 'Key ' + process.env.FAL_KEY } });
+      const rd = await rr.json();
+      const url = (rd && rd.video && rd.video.url) || (rd && rd.videos && rd.videos[0] && rd.videos[0].url) || null;
+      return res.json({ status: 'done', url });
+    }
+    return res.json({ status: sd.status || 'IN_PROGRESS' });
+  } catch (e) {
+    console.error('[AIVideo] status:', e.message);
+    res.status(500).json({ error: 'AI video status failed' });
+  }
+});
+
+// ============================================================
 // Health check
 // ============================================================
 app.get('/api/health', (req, res) => {
@@ -286,6 +340,7 @@ app.get('/api/health', (req, res) => {
       tts: !!process.env.OPENAI_API_KEY,
       pexels: !!process.env.PEXELS_API_KEY,
       groq: !!process.env.GROQ_API_KEY,
+      seedance: !!process.env.FAL_KEY,
     },
     time: new Date().toISOString(),
   });
