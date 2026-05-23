@@ -23,7 +23,20 @@ const express = require('express');
 const cors = require('cors');
 
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+app.disable('x-powered-by'); // don't reveal Express
+app.set('trust proxy', 1);   // correct client IP behind Railway proxy
+app.use(express.json({ limit: '64kb' })); // tight body limit — these endpoints need little
+
+// --- SECURITY HEADERS (basic hardening, no extra deps) ---
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  next();
+});
 
 // --- CORS: only allow your site to call this server ---
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ||
@@ -32,59 +45,111 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ||
 
 app.use(cors({
   origin: (origin, cb) => {
-    // allow requests with no origin (mobile apps, curl)
     if (!origin) return cb(null, true);
-    // allow exact matches in the list
     if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-    // also allow any *.pages.dev preview (Cloudflare Pages) and the main domain
     if (/^https:\/\/([a-z0-9-]+\.)?shortsmachine\.net$/.test(origin)) return cb(null, true);
     if (/^https:\/\/[a-z0-9-]+\.pages\.dev$/.test(origin)) return cb(null, true);
     return cb(new Error('Not allowed by CORS: ' + origin));
-  }
+  },
+  methods: ['GET', 'POST'],
+  maxAge: 86400,
 }));
 
-// --- Simple in-memory rate limiter (per IP) ---
+// --- Reject oversized/malformed JSON cleanly ---
+app.use((err, req, res, next) => {
+  if (err && err.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Request too large' });
+  }
+  if (err && err.status === 400) {
+    return res.status(400).json({ error: 'Invalid request body' });
+  }
+  next(err);
+});
+
+// --- Input sanitizer: strip control chars, cap length ---
+function cleanText(input, maxLen) {
+  if (typeof input !== 'string') return '';
+  // remove null bytes and most control chars, collapse to maxLen
+  return input.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').slice(0, maxLen);
+}
+
+// --- Rate limiter (per IP, sliding window) with global abuse guard ---
 const rateMap = new Map();
+let globalHits = [];
 function rateLimit(maxPerMin) {
   return (req, res, next) => {
-    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim()
+      || req.socket.remoteAddress || 'unknown';
     const now = Date.now();
     const windowStart = now - 60000;
+    // per-IP limit
     const hits = (rateMap.get(ip) || []).filter(t => t > windowStart);
     if (hits.length >= maxPerMin) {
       return res.status(429).json({ error: 'Too many requests, slow down a bit.' });
     }
     hits.push(now);
     rateMap.set(ip, hits);
+    // global abuse guard: if the whole server is flooded, shed load
+    globalHits = globalHits.filter(t => t > windowStart);
+    globalHits.push(now);
+    if (globalHits.length > 600) { // 600 req/min across all IPs
+      return res.status(503).json({ error: 'Server busy, try again shortly.' });
+    }
     next();
   };
 }
+
+// --- Periodic cleanup so the rate map can't grow unbounded (memory safety) ---
+setInterval(() => {
+  const windowStart = Date.now() - 60000;
+  for (const [ip, arr] of rateMap.entries()) {
+    const kept = arr.filter(t => t > windowStart);
+    if (kept.length === 0) rateMap.delete(ip);
+    else rateMap.set(ip, kept);
+  }
+}, 120000);
 
 // ============================================================
 // 1) OpenAI TTS  — POST /api/tts  { text, voice }
 // ============================================================
 app.post('/api/tts', rateLimit(20), async (req, res) => {
-  const { text, voice = 'onyx' } = req.body || {};
-  if (!text || typeof text !== 'string') {
+  const body = req.body || {};
+  const text = cleanText(body.text, 4000);
+  if (!text) {
     return res.status(400).json({ error: 'Missing text' });
   }
+  // Whitelist allowed voices — reject anything else (prevents injection of arbitrary params)
+  const ALLOWED_VOICES = ['onyx','ash','echo','ballad','nova','shimmer','coral','sage','fable','alloy','verse'];
+  // Voices supported by the older tts-1-hd model (used as a safe fallback)
+  const LEGACY_VOICES = ['alloy','echo','fable','onyx','nova','shimmer'];
+  let voice = (typeof body.voice === 'string') ? body.voice.toLowerCase() : 'onyx';
+  if (!ALLOWED_VOICES.includes(voice)) voice = 'onyx';
   if (!process.env.OPENAI_API_KEY) {
     return res.status(500).json({ error: 'Server TTS not configured' });
   }
-  try {
-    const r = await fetch('https://api.openai.com/v1/audio/speech', {
+
+  // Helper: call OpenAI TTS with a given model + voice
+  async function callTTS(model, v) {
+    return fetch('https://api.openai.com/v1/audio/speech', {
       method: 'POST',
       headers: {
         'Authorization': 'Bearer ' + process.env.OPENAI_API_KEY,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: 'tts-1-hd',
-        voice,
-        input: text.substring(0, 4000),
-        response_format: 'mp3',
-      }),
+      body: JSON.stringify({ model, voice: v, input: text, response_format: 'mp3' }),
     });
+  }
+
+  try {
+    // Try the new model first (supports all 11 voices)
+    let r = await callTTS('gpt-4o-mini-tts', voice);
+    // If the new model fails, fall back to tts-1-hd with a legacy-safe voice
+    if (!r.ok) {
+      const errTxt = await r.text();
+      console.warn('[TTS] gpt-4o-mini-tts failed (', r.status, '), falling back to tts-1-hd:', errTxt.substring(0, 120));
+      const safeVoice = LEGACY_VOICES.includes(voice) ? voice : 'onyx';
+      r = await callTTS('tts-1-hd', safeVoice);
+    }
     if (!r.ok) {
       const errTxt = await r.text();
       console.error('[TTS] OpenAI error:', r.status, errTxt.substring(0, 200));
@@ -103,8 +168,9 @@ app.post('/api/tts', rateLimit(20), async (req, res) => {
 // 2) Pexels video search  — GET /api/pexels?q=...&per_page=4
 // ============================================================
 app.get('/api/pexels', rateLimit(40), async (req, res) => {
-  const q = (req.query.q || '').toString().substring(0, 100);
-  const perPage = Math.min(parseInt(req.query.per_page) || 4, 10);
+  // Sanitize query: letters/numbers/spaces only, capped — prevents URL/param injection
+  let q = cleanText((req.query.q || '').toString(), 80).replace(/[^\w\s\-]/g, ' ').trim();
+  const perPage = Math.min(Math.max(parseInt(req.query.per_page) || 4, 1), 10);
   if (!q) return res.status(400).json({ error: 'Missing q' });
   if (!process.env.PEXELS_API_KEY) {
     return res.status(500).json({ error: 'Server Pexels not configured' });
