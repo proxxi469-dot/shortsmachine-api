@@ -340,6 +340,40 @@ app.get('/api/aivideo', rateLimit(180), async (req, res) => {
 });
 
 // ============================================================
+// 5) Coin redeem (Gumroad license key) — POST /api/redeem { code }
+//    Verifies the buyer's Gumroad license key and returns the coin amount.
+//    Gumroad tracks uses count -> prevents the same code being redeemed twice.
+//    NO database/accounts needed.
+// ============================================================
+// Fill in your real Gumroad PRODUCT IDs (Product -> Settings -> Advanced).
+const COIN_PRODUCTS = {
+  // 'PASTE_PRODUCT_ID_FOR_60_COINS': 60,
+  // 'PASTE_PRODUCT_ID_FOR_170_COINS': 170,
+};
+app.post('/api/redeem', rateLimit(15), async (req, res) => {
+  const code = cleanText((req.body && req.body.code || '').toString(), 80).trim();
+  if (!code) return res.status(400).json({ error: 'Missing code' });
+  const ids = Object.keys(COIN_PRODUCTS);
+  if (!ids.length) return res.status(503).json({ ok: false, reason: 'not_configured' });
+  for (const pid of ids) {
+    try {
+      const params = new URLSearchParams({ product_id: pid, license_key: code, increment_uses_count: 'true' });
+      const r = await fetch('https://api.gumroad.com/v2/licenses/verify', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString(),
+      });
+      const d = await r.json();
+      if (d && d.success) {
+        const p = d.purchase || {};
+        if (p.refunded || p.disputed || p.chargebacked) return res.json({ ok: false, reason: 'refunded' });
+        if (d.uses && d.uses > 1) return res.json({ ok: false, reason: 'already_used' });
+        return res.json({ ok: true, coins: COIN_PRODUCTS[pid] });
+      }
+    } catch (e) { /* try next product */ }
+  }
+  return res.json({ ok: false, reason: 'invalid' });
+});
+
+// ============================================================
 // Health check
 // ============================================================
 app.get('/api/health', (req, res) => {
