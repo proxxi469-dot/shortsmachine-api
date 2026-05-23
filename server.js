@@ -176,20 +176,60 @@ app.get('/api/pexels', rateLimit(40), async (req, res) => {
     return res.status(500).json({ error: 'Server Pexels not configured' });
   }
   try {
-    // Don't force portrait (too restrictive); request more and let client pick best
-    const url = `https://api.pexels.com/videos/search?query=${encodeURIComponent(q)}&per_page=${perPage}`;
-    const r = await fetch(url, { headers: { 'Authorization': process.env.PEXELS_API_KEY } });
-    if (!r.ok) {
-      return res.status(502).json({ error: 'Pexels provider error', status: r.status });
+    // MULTI-SOURCE + RELEVANCE RANKING
+    // Fetch a larger candidate pool from Pexels (+Pixabay if configured),
+    // score each clip by how well its metadata matches the query keywords,
+    // and return the most relevant ones. Response shape is unchanged.
+    const want = perPage;
+    const pool = Math.min(Math.max(want * 3, 15), 30);
+    const tokens = q.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+    const scoreText = (txt) => {
+      const s = (txt || '').toLowerCase();
+      let sc = 0;
+      for (const t of tokens) { if (s.includes(t)) sc++; }
+      return sc;
+    };
+    const candidates = [];
+
+    // --- Source 1: Pexels ---
+    try {
+      const pr = await fetch(`https://api.pexels.com/videos/search?query=${encodeURIComponent(q)}&per_page=${pool}`, { headers: { 'Authorization': process.env.PEXELS_API_KEY } });
+      if (pr.ok) {
+        const pd = await pr.json();
+        for (const v of (pd.videos || [])) {
+          const files = (v.video_files || []).map(f => ({ link: f.link, width: f.width, height: f.height, quality: f.quality }));
+          if (!files.length) continue;
+          const slug = (v.url || '').replace(/https?:\/\/[^/]+\/video\//, '').replace(/[-\/]/g, ' ');
+          candidates.push({ id: v.id, duration: v.duration, files, _rel: scoreText(slug), _src: 'pexels' });
+        }
+      }
+    } catch (e) { console.error('[Pexels] source error:', e.message); }
+
+    // --- Source 2: Pixabay (only if PIXABAY_API_KEY is set) ---
+    if (process.env.PIXABAY_API_KEY) {
+      try {
+        const xr = await fetch(`https://pixabay.com/api/videos/?key=${process.env.PIXABAY_API_KEY}&q=${encodeURIComponent(q)}&per_page=${pool}&safesearch=true`);
+        if (xr.ok) {
+          const xd = await xr.json();
+          for (const h of (xd.hits || [])) {
+            const vids = h.videos || {};
+            const files = ['large', 'medium', 'small', 'tiny']
+              .filter(k => vids[k] && vids[k].url)
+              .map(k => ({ link: vids[k].url, width: vids[k].width, height: vids[k].height, quality: k }));
+            if (!files.length) continue;
+            candidates.push({ id: 'px_' + h.id, duration: h.duration, files, _rel: scoreText(h.tags), _src: 'pixabay' });
+          }
+        }
+      } catch (e) { console.error('[Pixabay] source error:', e.message); }
     }
-    const data = await r.json();
-    // Return all video files (client picks best fit); don't over-filter
-    const videos = (data.videos || []).map(v => ({
-      id: v.id,
-      duration: v.duration,
-      files: (v.video_files || [])
-        .map(f => ({ link: f.link, width: f.width, height: f.height, quality: f.quality })),
-    })).filter(v => v.files.length > 0);
+
+    if (!candidates.length) return res.status(502).json({ error: 'No footage found' });
+
+    // Rank: relevance score desc, then prefer clips that have a portrait file
+    const hasPortrait = (c) => c.files.some(f => (f.height || 0) >= (f.width || 0)) ? 1 : 0;
+    candidates.sort((a, b) => (b._rel - a._rel) || (hasPortrait(b) - hasPortrait(a)));
+
+    const videos = candidates.slice(0, want).map(c => ({ id: c.id, duration: c.duration, files: c.files }));
     res.json({ videos });
   } catch (e) {
     console.error('[Pexels] error:', e.message);
