@@ -358,6 +358,22 @@ const GIFT_STARTER = {
   'SM-V8N2GS': 100, 'SM-L5T9XJ': 100, 'SM-D2K6QW': 100, 'SM-R7M4PB': 100, 'SM-H9C3VZ': 100,
   'SM-T4G8LN': 200, 'SM-X2P6KD': 200, 'SM-B5V9QM': 200, 'SM-N8L3WR': 200, 'SM-K6D2HT': 200,
 };
+// --- Upstash Redis (REST) — persistent gift codes ---
+const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL || '';
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
+const redisReady = () => !!(REDIS_URL && REDIS_TOKEN);
+async function redis(cmd) {
+  if (!redisReady()) return null;
+  try {
+    const r = await fetch(REDIS_URL, {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + REDIS_TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify(cmd),
+    });
+    const d = await r.json();
+    return d ? d.result : null;
+  } catch (e) { console.error('[Redis]', e.message); return null; }
+}
 function getGiftCodes() {
   const out = {};
   (process.env.GIFT_CODES || '').split(',').forEach(pair => {
@@ -374,6 +390,18 @@ app.post('/api/redeem', rateLimit(15), async (req, res) => {
   if (!code) return res.status(400).json({ error: 'Missing code' });
   // 1) GIFT codes first (owner-generated, for sending coins to friends)
   const giftUpper = code.toUpperCase();
+  // 1a) Persistent Redis gift codes (atomic single-use via SET NX)
+  if (redisReady()) {
+    try {
+      const rc = await redis(['GET', 'gc:' + giftUpper]);
+      if (rc != null) {
+        const claimed = await redis(['SET', 'gcu:' + giftUpper, '1', 'NX']);
+        if (claimed === null) return res.json({ ok: false, reason: 'already_used' });
+        console.log('[Redeem] Redis gift used:', giftUpper, '->', rc);
+        return res.json({ ok: true, coins: parseInt(rc) || 0 });
+      }
+    } catch (e) { /* fall through */ }
+  }
   const gifts = getGiftCodes();
   if (gifts[giftUpper] != null) {
     if (global.__usedGift.has(giftUpper)) return res.json({ ok: false, reason: 'already_used' });
@@ -400,6 +428,39 @@ app.post('/api/redeem', rateLimit(15), async (req, res) => {
     } catch (e) { /* try next product */ }
   }
   return res.json({ ok: false, reason: 'invalid' });
+});
+
+// ============================================================
+// 5b) ADMIN: generate / list gift codes (owner only, ADMIN_KEY)
+// ============================================================
+function adminOk(req) { return process.env.ADMIN_KEY && (req.body && req.body.key) === process.env.ADMIN_KEY; }
+app.post('/api/admin/gen', rateLimit(30), async (req, res) => {
+  if (!adminOk(req)) return res.status(403).json({ error: 'forbidden' });
+  if (!redisReady()) return res.status(503).json({ error: 'redis_not_configured' });
+  const coins = Math.min(Math.max(parseInt(req.body && req.body.coins) || 100, 1), 100000);
+  const count = Math.min(Math.max(parseInt(req.body && req.body.count) || 1, 1), 50);
+  const codes = [];
+  for (let i = 0; i < count; i++) {
+    const c = 'SM-' + Math.random().toString(36).slice(2, 7).toUpperCase() + Math.random().toString(36).slice(2, 5).toUpperCase();
+    await redis(['SET', 'gc:' + c, String(coins)]);
+    await redis(['SADD', 'gc:all', c]);
+    codes.push({ code: c, coins });
+  }
+  console.log('[Admin] Generated', count, 'codes of', coins, 'coins');
+  res.json({ ok: true, codes });
+});
+app.post('/api/admin/list', rateLimit(30), async (req, res) => {
+  if (!adminOk(req)) return res.status(403).json({ error: 'forbidden' });
+  if (!redisReady()) return res.status(503).json({ error: 'redis_not_configured' });
+  const all = (await redis(['SMEMBERS', 'gc:all'])) || [];
+  const out = [];
+  for (const c of all) {
+    const coins = await redis(['GET', 'gc:' + c]);
+    const used = await redis(['GET', 'gcu:' + c]);
+    out.push({ code: c, coins: parseInt(coins) || 0, used: used != null });
+  }
+  out.sort((a, b) => (a.used === b.used ? 0 : (a.used ? 1 : -1)));
+  res.json({ ok: true, codes: out });
 });
 
 // ============================================================
