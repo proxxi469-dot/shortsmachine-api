@@ -361,6 +361,8 @@ app.post('/api/image', rateLimit(40), async (req, res) => {
   const steps = (modelIn === 'dev') ? 28 : 4;
   const reqBody = { prompt: full, image_size: 'portrait_16_9', num_images: 1, num_inference_steps: steps };
   if (modelIn === 'dev') reqBody.guidance_scale = 3.5;
+  const _seed = parseInt(req.body && req.body.seed);
+  if (!isNaN(_seed)) reqBody.seed = _seed; // same seed across scenes -> consistent character/style
   try {
     const r = await fetch('https://fal.run/' + model, {
       method: 'POST',
