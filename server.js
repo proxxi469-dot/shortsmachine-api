@@ -297,11 +297,13 @@ app.post('/api/aivideo', rateLimit(20), async (req, res) => {
   const duration = String(Math.min(Math.max(parseInt(req.body && req.body.duration) || 5, 4), 10));
   const arIn = (req.body && req.body.aspect_ratio) || '9:16';
   const aspect_ratio = ['9:16', '16:9', '1:1', '3:4', '4:3', '21:9'].includes(arIn) ? arIn : '9:16';
+  const resIn = (req.body && req.body.resolution) || '480p';
+  const resolution = ['480p', '720p'].includes(resIn) ? resIn : '480p';
   try {
     const r = await fetch('https://queue.fal.run/' + FAL_MODEL, {
       method: 'POST',
       headers: { 'Authorization': 'Key ' + process.env.FAL_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, duration, resolution: '720p', aspect_ratio, generate_audio: false }),
+      body: JSON.stringify({ prompt, duration, resolution, aspect_ratio, generate_audio: false }),
     });
     const data = await r.json();
     if (!r.ok || !data.request_id) {
