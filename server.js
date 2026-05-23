@@ -286,6 +286,12 @@ const isFalUrl = (u) => typeof u === 'string' && /^https:\/\/queue\.fal\.run\//.
 
 app.post('/api/aivideo', rateLimit(20), async (req, res) => {
   if (!process.env.FAL_KEY) return res.status(500).json({ error: 'Server FAL not configured' });
+  // Per-IP + global daily cap protects the fal balance from abuse (client coins are not trusted)
+  const _ip = (req.headers['x-forwarded-for'] || req.ip || '').toString().split(',')[0].trim();
+  const _today = new Date().toDateString();
+  if (!global.__aiDay || global.__aiDay.date !== _today) global.__aiDay = { date: _today, ips: {}, total: 0 };
+  if (global.__aiDay.total >= 60) return res.status(429).json({ error: 'Daily AI limit reached, try again tomorrow' });
+  if ((global.__aiDay.ips[_ip] || 0) >= 5) return res.status(429).json({ error: 'Daily AI limit reached for this user' });
   const prompt = cleanText((req.body && req.body.prompt || '').toString(), 600);
   if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
   const duration = String(Math.min(Math.max(parseInt(req.body && req.body.duration) || 5, 4), 10));
@@ -302,6 +308,7 @@ app.post('/api/aivideo', rateLimit(20), async (req, res) => {
       console.error('[AIVideo] submit:', r.status, JSON.stringify(data).substring(0, 300));
       return res.status(502).json({ error: 'AI video submit failed' });
     }
+    global.__aiDay.ips[_ip] = (global.__aiDay.ips[_ip] || 0) + 1; global.__aiDay.total++;
     res.json({ id: data.request_id, status_url: data.status_url, response_url: data.response_url });
   } catch (e) {
     console.error('[AIVideo] error:', e.message);
