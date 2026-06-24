@@ -634,6 +634,46 @@ app.get('/api/stats', rateLimit(60), async (req, res) => {
 });
 
 // ============================================================
+// SUBSCRIPTION (Gumroad membership) — NO coins, NO redeem.
+//   /api/gw           : Gumroad Ping webhook -> store sub:<email> in Redis (seller-validated)
+//   /api/sub-status   : site asks "is this email an active subscriber?"
+// ============================================================
+const GW_SELLER = 'bWc1X1ZtUN-DnrPSRfbx_Q==';        // our Gumroad seller_id
+const SUB_PERMALINKS = ['lkzyc'];                     // membership product permalink(s)
+const SUB_TTL = 40 * 24 * 60 * 60;                    // 40 days (refreshed on each monthly charge)
+
+app.post('/api/gw', express.urlencoded({ extended: true, limit: '256kb' }), async (req, res) => {
+  res.send('ok'); // ack immediately
+  try {
+    const b = req.body || {};
+    if (b.seller_id !== GW_SELLER) return;             // only our pings
+    const permalink = (b.product_permalink || '').toString().split('/').pop();
+    if (!SUB_PERMALINKS.includes(permalink)) return;   // only the membership
+    const email = (b.email || '').toString().trim().toLowerCase();
+    if (!email || !redisReady()) return;
+    const ended = b.cancelled === 'true' || b.refunded === 'true' || b.dispute === 'true'
+      || b.chargebacked === 'true' || !!b.subscription_ended_at || !!b.subscription_cancelled_at;
+    if (ended) {
+      await redis(['DEL', 'sub:' + email]);
+      console.log('[gw] sub ENDED:', email, '(' + permalink + ')');
+    } else {
+      await redis(['SET', 'sub:' + email, '1', 'EX', String(SUB_TTL)]);
+      console.log('[gw] sub ACTIVE:', email, '(' + permalink + ')');
+    }
+  } catch (e) { console.error('[gw]', e.message); }
+});
+
+app.post('/api/sub-status', rateLimit(40), async (req, res) => {
+  const email = ((req.body && req.body.email) || '').toString().trim().toLowerCase();
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.json({ active: false });
+  if (!redisReady()) return res.json({ active: false });
+  try {
+    const v = await redis(['GET', 'sub:' + email]);
+    res.json({ active: v === '1' });
+  } catch (e) { res.json({ active: false }); }
+});
+
+// ============================================================
 // Health check
 // ============================================================
 app.get('/api/health', (req, res) => {
