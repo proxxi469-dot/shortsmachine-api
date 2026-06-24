@@ -418,6 +418,7 @@ const COIN_PRODUCTS = {
   'ouftrq': 170,  // $10 pack
   'lpangw': 350,  // $25 pack
   'tcykg': 800,   // $50 pack
+  'omyzk': 250,   // $9 Creator (monthly) — ~50 shorts or ~6-12 cartoons
 };
 // --- GIFT CODES: owner-generated codes to send coins to friends (no Gumroad needed) ---
 // Manage your own via Railway env var GIFT_CODES = "CODE:coins,CODE:coins".
