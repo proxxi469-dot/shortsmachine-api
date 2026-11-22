@@ -1,0 +1,45 @@
+name: ElevenLabs TTS
+
+# tts/requests/*.json dosyalarına yazılan metinleri ElevenLabs ile seslendirir
+# ve mp3'leri tts/out/ altına aynı dala commit'ler.
+on:
+  push:
+    paths:
+      - "tts/requests/**.json"
+      - "tts/generate.mjs"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tts-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Seslendir
+        env:
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+        run: node tts/generate.mjs
+
+      - name: Sonuçları commit'le
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tts/out
+          if git diff --cached --quiet; then
+            echo "Yeni ses yok."
+          else
+            git commit -m "tts: ElevenLabs sesleri üretildi"
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi

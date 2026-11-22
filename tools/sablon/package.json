@@ -1,0 +1,9 @@
+{
+  "name": "turkshitpostt-sablon",
+  "private": true,
+  "description": "Turkshitpostt video şablonu için fontlar",
+  "dependencies": {
+    "@fontsource/anton": "^5.0.0",
+    "@fontsource/bricolage-grotesque": "^5.0.0"
+  }
+}
