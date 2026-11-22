@@ -6,6 +6,7 @@ on:
   push:
     paths:
       - "tts/requests/**.json"
+      - "tts/generate.mjs"
   workflow_dispatch:
 
 permissions:

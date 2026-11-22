@@ -45,7 +45,12 @@ async function listVoices() {
 }
 
 async function main() {
-  await listVoices();
+  try {
+    await listVoices();
+  } catch (e) {
+    // Kısıtlı anahtarlarda voices_read izni olmayabilir; seslendirmeye engel değil
+    console.warn(`Ses listesi alınamadı (atlandı): ${e.message}`);
+  }
   if (!existsSync(REQ_DIR)) return;
   let made = 0, skipped = 0, failed = 0;
   for (const file of (await readdir(REQ_DIR)).filter((f) => f.endsWith(".json"))) {
